@@ -14,17 +14,34 @@ const cca = new ConfidentialClientApplication({
   }
 });
 
-export async function graphFetch(path: string, init: RequestInit = {}): Promise<any> {
+export class HttpError extends Error {
+  status: number;
+
+  body: unknown;
+
+  constructor(status: number, statusText: string, body: unknown) {
+    super(`Request failed: ${status} ${statusText}`);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function fetchWithToken(
+  baseUrl: string,
+  path: string,
+  init: RequestInit = {},
+  defaultHeaders: Record<string, string> = {}
+): Promise<any> {
   const token = await cca.acquireTokenByClientCredential({ scopes });
   if (!token?.accessToken) {
     throw new Error('Failed to acquire Microsoft Graph token');
   }
 
-  const response = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+  const response = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token.accessToken}`,
-      'Content-Type': 'application/json',
+      ...defaultHeaders,
       ...(init.headers ?? {})
     }
   });
@@ -35,15 +52,42 @@ export async function graphFetch(path: string, init: RequestInit = {}): Promise<
     try {
       body = JSON.parse(text);
     } catch (error) {
-      logger.warn('Failed to parse Graph response as JSON', { path, text, error: (error as Error).message });
+      logger.warn('Failed to parse response as JSON', {
+        baseUrl,
+        path,
+        text,
+        error: (error as Error).message
+      });
       body = text;
     }
   }
 
   if (!response.ok) {
-    logger.error('Graph request failed', { path, status: response.status, body });
-    throw new Error(`Graph request failed: ${response.status}`);
+    logger.error('Request failed', {
+      baseUrl,
+      path,
+      status: response.status,
+      body
+    });
+    throw new HttpError(response.status, response.statusText, body);
   }
 
   return body;
+}
+
+export async function graphFetch(path: string, init: RequestInit = {}): Promise<any> {
+  return fetchWithToken('https://graph.microsoft.com/v1.0', path, init, {
+    'Content-Type': 'application/json'
+  });
+}
+
+export async function sharepointFetch(path: string, init: RequestInit = {}): Promise<any> {
+  if (!CONFIG.sharepointHost) {
+    throw new Error('SHAREPOINT_HOST must be configured to call SharePoint REST APIs');
+  }
+
+  return fetchWithToken(CONFIG.sharepointHost, path, init, {
+    'Content-Type': 'application/json;odata=verbose',
+    Accept: 'application/json;odata=verbose'
+  });
 }

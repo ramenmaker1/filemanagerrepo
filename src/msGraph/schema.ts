@@ -14,11 +14,13 @@ export const MsGraphActionSchema = z.discriminatedUnion('action', [
   }),
   z.object({
     action: z.literal('create_catalog_page'),
-    catalogLinks: z.object({
-      repos: z.array(z.string()),
-      base44: z.array(z.string()),
-      dataBuckets: z.array(z.string())
-    })
+    catalogLinks: z
+      .object({
+        repos: z.array(z.string()).optional(),
+        base44: z.array(z.string()).optional(),
+        dataBuckets: z.array(z.string()).optional()
+      })
+      .default({})
   }),
   z.object({
     action: z.literal('share_deliverable'),

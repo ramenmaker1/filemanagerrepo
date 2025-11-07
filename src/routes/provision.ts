@@ -15,12 +15,9 @@ const ProvisionSchema = z.object({
 router.post('/', async (req, res, next) => {
   try {
     const body = ProvisionSchema.parse(req.body ?? {});
-    if (body.siteType && body.siteType !== 'team') {
-      return res.status(400).json({ error: 'Communication sites are not implemented in this starter.' });
-    }
     const result = await dispatchGraphAction(body.displayName ?? CONFIG.siteDisplayName, {
       action: 'ensure_site',
-      siteType: 'team',
+      siteType: body.siteType ?? CONFIG.siteType,
       siteName: body.displayName ?? CONFIG.siteDisplayName
     });
     res.json(result);

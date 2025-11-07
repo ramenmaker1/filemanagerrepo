@@ -2,9 +2,9 @@ import { graphFetch } from './auth.js';
 import { logger } from '../logger.js';
 
 type CatalogLinks = {
-  repos: string[];
-  base44: string[];
-  dataBuckets: string[];
+  repos?: string[];
+  base44?: string[];
+  dataBuckets?: string[];
 };
 
 function buildHtmlSection(title: string, links: string[]): string {
@@ -16,9 +16,9 @@ function buildHtmlSection(title: string, links: string[]): string {
 
 export async function ensureCatalogPage(siteId: string, title: string, links: CatalogLinks): Promise<string> {
   const html = [
-    buildHtmlSection('Repos', links.repos),
-    buildHtmlSection('Base44 Apps', links.base44),
-    buildHtmlSection('Data Buckets', links.dataBuckets)
+    buildHtmlSection('Repos', links.repos ?? []),
+    buildHtmlSection('Base44 Apps', links.base44 ?? []),
+    buildHtmlSection('Data Buckets', links.dataBuckets ?? [])
   ].join('');
 
   const response = await graphFetch(`/sites/${siteId}/pages`, {

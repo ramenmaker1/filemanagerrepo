@@ -4,7 +4,7 @@ This service provisions and manages the SharePoint/OneDrive workspace for **Elio
 
 ## Features
 
-- Provision or reconcile the "Elion Studio" Team site via Microsoft 365 Group creation.
+- Provision or reconcile the "Elion Studio" SharePoint workspace as either a Microsoft 365 team site or a communication site.
 - Ensure document libraries exist: `Projects`, `Assets`, `Data`, `Deliverables`, `Templates`, `Legal & Finance`.
 - Create dedicated security groups (`Elion-Editors`, `Elion-Viewers`) and lock down the Legal & Finance library.
 - Create and refresh a modern **Catalog** page with repository, Base44, and data bucket links.
@@ -28,7 +28,7 @@ Copy `.env.example` to `.env` and fill in the required secrets:
 - `AZURE_CLIENT_ID`
 - `AZURE_CLIENT_SECRET`
 - `OPENAI_API_KEY`
-- Optional overrides: `SITE_DISPLAY_NAME`, `PORT`, `OPENAI_MODEL`
+- Optional overrides: `SITE_DISPLAY_NAME`, `SITE_TYPE` (`team` or `communication`), `SHAREPOINT_HOST` (required for communication sites), `PORT`, `OPENAI_MODEL`
 
 > Grant the Azure AD app the app-only Graph permissions: `Sites.ReadWrite.All`, `Files.ReadWrite.All`, `Group.ReadWrite.All`, `User.Read.All` (plus `Team.Create` if you plan to team-enable the group).
 
@@ -75,9 +75,11 @@ The `ms_graph_ops` tool accepts the following JSON payloads:
 
 The agent enforces Deliverables-only sharing and will respond with human guidance for device hygiene (Files On-Demand/selective sync) per the PRD.
 
+> Omit any of the `catalogLinks` arrays to leave a section empty; the page renders a placeholder when no links are provided.
+
 ### Notes & Limitations
 
-- Communication site creation is not yet implemented; the provision endpoint currently creates or reconciles the Microsoft 365 Group team site variant.
+- Communication site creation leverages SharePoint's `_api/SPSiteManager/Create`; configure `SHAREPOINT_HOST` with your tenant hostname (for example `https://contoso.sharepoint.com`).
 - Share link expiration is subject to tenant policies; the service requests the provided `expiresAt`, but SharePoint may override it.
 - Catalog page composition uses a simplified text web part — extend `catalog.ts` for richer layouts.
 - Never upload Git repositories or `.env` files to SharePoint/OneDrive; keep code in GitHub and sync references via the Catalog page.

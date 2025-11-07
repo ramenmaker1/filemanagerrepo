@@ -1,22 +1,64 @@
-import { graphFetch } from './auth.js';
+import { graphFetch, sharepointFetch, HttpError } from './auth.js';
 import { logger } from '../logger.js';
+import { CONFIG, type SiteType } from '../config.js';
 
-export interface Group {
+interface Group {
   id: string;
   displayName: string;
   mailNickname: string;
-  sites?: { value: Array<{ id: string }> };
 }
 
-export async function ensureTeamSite(displayName: string): Promise<{ group: Group; siteId: string }>
-{
+interface SiteResponse {
+  id: string;
+  webUrl: string;
+  displayName?: string;
+}
+
+export interface SiteContext {
+  siteId: string;
+  siteUrl: string;
+  siteType: SiteType;
+  groupId?: string;
+}
+
+const SITE_PROVISION_ATTEMPTS = 10;
+const SITE_PROVISION_DELAY_MS = 5000;
+
+function slugify(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .substring(0, 60);
+}
+
+async function pollForSite(path: string): Promise<SiteResponse> {
+  for (let attempt = 0; attempt < SITE_PROVISION_ATTEMPTS; attempt += 1) {
+    try {
+      const site = (await graphFetch(path)) as SiteResponse;
+      if (site?.id) {
+        return site;
+      }
+    } catch (error) {
+      logger.warn('Waiting for site provisioning', {
+        attempt,
+        error: (error as Error).message
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, SITE_PROVISION_DELAY_MS));
+  }
+  throw new Error('Timed out waiting for SharePoint site provisioning');
+}
+
+export async function ensureTeamSite(displayName: string): Promise<SiteContext> {
   const escaped = displayName.replace(/'/g, "''");
   const existing = await graphFetch(`/groups?$filter=displayName eq '${escaped}'`);
   if (existing.value?.length) {
     const group = existing.value[0] as Group;
-    const site = await graphFetch(`/groups/${group.id}/sites/root`);
+    const site = (await graphFetch(`/groups/${group.id}/sites/root`)) as SiteResponse;
     logger.info('Found existing team site', { displayName, siteId: site.id });
-    return { group, siteId: site.id as string };
+    return { groupId: group.id, siteId: site.id, siteUrl: site.webUrl, siteType: 'team' };
   }
 
   const group = (await graphFetch('/groups', {
@@ -31,25 +73,64 @@ export async function ensureTeamSite(displayName: string): Promise<{ group: Grou
   })) as Group;
 
   logger.info('Created unified group, waiting for SharePoint site provisioning', { groupId: group.id });
-
-  // Poll for site creation
-  let siteId = '';
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    try {
-      const site = await graphFetch(`/groups/${group.id}/sites/root`);
-      if (site?.id) {
-        siteId = site.id as string;
-        break;
-      }
-    } catch (error) {
-      logger.warn('Waiting for site provisioning', { attempt, error: (error as Error).message });
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-  }
-
-  if (!siteId) {
-    throw new Error('Timed out waiting for SharePoint site provisioning');
-  }
-
-  return { group, siteId };
+  const site = await pollForSite(`/groups/${group.id}/sites/root`);
+  return { groupId: group.id, siteId: site.id, siteUrl: site.webUrl, siteType: 'team' };
 }
+
+async function getSiteByPath(hostname: string, relativePath: string): Promise<SiteResponse | null> {
+  try {
+    return (await graphFetch(`/sites/${hostname}:${relativePath}`)) as SiteResponse;
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export async function ensureCommunicationSite(displayName: string): Promise<SiteContext> {
+  if (!CONFIG.sharepointHost) {
+    throw new Error('SHAREPOINT_HOST must be configured for communication sites');
+  }
+
+  let url: URL;
+  try {
+    url = new URL(CONFIG.sharepointHost);
+  } catch (error) {
+    throw new Error('SHAREPOINT_HOST must be a valid absolute URL');
+  }
+  const slug = slugify(displayName || 'site');
+  const relativePath = `/sites/${slug}`;
+
+  const existing = await getSiteByPath(url.hostname, relativePath);
+  if (existing?.id) {
+    logger.info('Found existing communication site', { displayName, siteId: existing.id });
+    return { siteId: existing.id, siteUrl: existing.webUrl, siteType: 'communication' };
+  }
+
+  logger.info('Creating communication site via SPSiteManager', { displayName, relativePath });
+  await sharepointFetch('/_api/SPSiteManager/Create', {
+    method: 'POST',
+    body: JSON.stringify({
+      request: {
+        Title: displayName,
+        Url: `${url.origin}${relativePath}`,
+        Lcid: 1033,
+        ShareByEmailEnabled: true,
+        Description: 'Elion Studio communication site',
+        WebTemplate: 'SITEPAGEPUBLISHING#0',
+        SiteDesignId: '00000000-0000-0000-0000-000000000000'
+      }
+    })
+  });
+
+  const site = await pollForSite(`/sites/${url.hostname}:${relativePath}`);
+  return { siteId: site.id, siteUrl: site.webUrl, siteType: 'communication' };
+}
+
+export async function ensureSite(displayName: string, siteType: SiteType = 'team'): Promise<SiteContext> {
+  return siteType === 'communication'
+    ? ensureCommunicationSite(displayName)
+    : ensureTeamSite(displayName);
+}
+
