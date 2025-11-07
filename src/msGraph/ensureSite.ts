@@ -89,13 +89,13 @@ async function getSiteByPath(hostname: string, relativePath: string): Promise<Si
 }
 
 export async function ensureCommunicationSite(displayName: string): Promise<SiteContext> {
-  if (!CONFIG.sharepointHost) {
+  if (!CONFIG.sharepoint.host) {
     throw new Error('SHAREPOINT_HOST must be configured for communication sites');
   }
 
   let url: URL;
   try {
-    url = new URL(CONFIG.sharepointHost);
+    url = new URL(CONFIG.sharepoint.host);
   } catch (error) {
     throw new Error('SHAREPOINT_HOST must be a valid absolute URL');
   }

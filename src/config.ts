@@ -1,42 +1,261 @@
 import 'dotenv/config';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
-const requiredVars = [
-  'AZURE_TENANT_ID',
-  'AZURE_CLIENT_ID',
-  'AZURE_CLIENT_SECRET',
-  'OPENAI_API_KEY'
-] as const;
+import { z } from 'zod';
+
+import { logger } from './logger.js';
 
 export type SiteType = 'team' | 'communication';
 
-const rawSiteType = (process.env.SITE_TYPE ?? 'team').toLowerCase();
-
-function isSiteType(value: string): value is SiteType {
-  return value === 'team' || value === 'communication';
-}
-
-const normalizedSiteType: SiteType = isSiteType(rawSiteType) ? rawSiteType : 'team';
-
-const sharepointHost = process.env.SHAREPOINT_HOST?.replace(/\/+$/, '');
-
-export const CONFIG = {
-  tenantId: process.env.AZURE_TENANT_ID ?? '',
-  clientId: process.env.AZURE_CLIENT_ID ?? '',
-  clientSecret: process.env.AZURE_CLIENT_SECRET ?? '',
-  openAiApiKey: process.env.OPENAI_API_KEY ?? '',
-  siteDisplayName: process.env.SITE_DISPLAY_NAME ?? 'Elion Studio',
-  port: Number(process.env.PORT ?? 8080),
-  openaiModel: process.env.OPENAI_MODEL ?? 'gpt-4.1',
-  siteType: normalizedSiteType,
-  sharepointHost: sharepointHost ?? ''
+const DEFAULT_CONFIG = {
+  environment: 'development',
+  server: {
+    port: 8080,
+  },
+  azure: {
+    tenantId: '',
+    clientId: '',
+    clientSecret: '',
+    scope: 'https://graph.microsoft.com/.default',
+  },
+  sharepoint: {
+    siteDisplayName: 'Elion Studio',
+    siteType: 'team' as SiteType,
+    host: undefined as string | undefined,
+  },
+  openai: {
+    apiKey: '',
+    model: 'gpt-4.1',
+  },
+  redis: {
+    url: undefined as string | undefined,
+    tls: false,
+    keyPrefix: 'elion:sp-agent',
+  },
+  auth: {
+    tokenCacheTtlMinutes: 55,
+    tokenFallbackMs: 5 * 60 * 1000,
+  },
 } as const;
 
-export function requireEnv(): void {
-  const missing = requiredVars.filter((key) => !process.env[key]);
-  if (CONFIG.siteType === 'communication' && !CONFIG.sharepointHost) {
-    missing.push('SHAREPOINT_HOST');
+const ConfigSchema = z
+  .object({
+    environment: z
+      .enum(['development', 'test', 'staging', 'production'])
+      .default(DEFAULT_CONFIG.environment),
+    server: z.object({
+      port: z
+        .number({ invalid_type_error: 'PORT must be a number' })
+        .int('PORT must be an integer')
+        .min(1, 'PORT must be between 1 and 65535')
+        .max(65535, 'PORT must be between 1 and 65535')
+        .default(DEFAULT_CONFIG.server.port),
+    }),
+    azure: z.object({
+      tenantId: z.string().min(1, 'AZURE_TENANT_ID is required'),
+      clientId: z.string().min(1, 'AZURE_CLIENT_ID is required'),
+      clientSecret: z.string().min(1, 'AZURE_CLIENT_SECRET is required'),
+      scope: z.string().min(1).default(DEFAULT_CONFIG.azure.scope),
+    }),
+    sharepoint: z
+      .object({
+        siteDisplayName: z
+          .string({ invalid_type_error: 'SITE_DISPLAY_NAME must be a string' })
+          .min(1, 'SITE_DISPLAY_NAME cannot be empty')
+          .default(DEFAULT_CONFIG.sharepoint.siteDisplayName),
+        siteType: z
+          .enum(['team', 'communication'])
+          .default(DEFAULT_CONFIG.sharepoint.siteType),
+        host: z
+          .string()
+          .transform((value) => value.trim())
+          .transform((value) => value.replace(/\/+$/, ''))
+          .optional(),
+      })
+      .default(DEFAULT_CONFIG.sharepoint),
+    openai: z.object({
+      apiKey: z.string().min(1, 'OPENAI_API_KEY is required'),
+      model: z.string().min(1).default(DEFAULT_CONFIG.openai.model),
+    }),
+    redis: z
+      .object({
+        url: z
+          .string()
+          .trim()
+          .transform((value) => (value.length ? value : undefined))
+          .refine((value) => !value || value.startsWith('redis://') || value.startsWith('rediss://'), {
+            message: 'REDIS_URL must start with redis:// or rediss://',
+          })
+          .optional(),
+        tls: z.boolean().default(DEFAULT_CONFIG.redis.tls),
+        keyPrefix: z
+          .string({ invalid_type_error: 'REDIS_KEY_PREFIX must be a string' })
+          .min(1, 'REDIS_KEY_PREFIX cannot be empty')
+          .default(DEFAULT_CONFIG.redis.keyPrefix),
+      })
+      .default(DEFAULT_CONFIG.redis),
+    auth: z
+      .object({
+        tokenCacheTtlMinutes: z
+          .number({ invalid_type_error: 'AUTH_TOKEN_CACHE_TTL_MINUTES must be a number' })
+          .int('AUTH_TOKEN_CACHE_TTL_MINUTES must be an integer')
+          .min(1, 'Token cache TTL must be at least 1 minute')
+          .max(55, 'Token cache TTL cannot exceed 55 minutes')
+          .default(DEFAULT_CONFIG.auth.tokenCacheTtlMinutes),
+        tokenFallbackMs: z
+          .number({ invalid_type_error: 'AUTH_TOKEN_FALLBACK_MS must be a number' })
+          .int('AUTH_TOKEN_FALLBACK_MS must be an integer')
+          .min(0, 'Token fallback window must be non-negative')
+          .default(DEFAULT_CONFIG.auth.tokenFallbackMs),
+      })
+      .default(DEFAULT_CONFIG.auth),
+  })
+  .superRefine((config, ctx) => {
+    if (config.sharepoint.siteType === 'communication' && !config.sharepoint.host) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'SHAREPOINT_HOST is required when SITE_TYPE is "communication"',
+        path: ['sharepoint', 'host'],
+      });
+    }
+  });
+
+type ConfigInput = z.input<typeof ConfigSchema>;
+type AppConfig = z.output<typeof ConfigSchema>;
+
+function parseBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
   }
-  if (missing.length) {
-    throw new Error(`Missing required environment variables: ${[...new Set(missing)].join(', ')}`);
+  if (value === 'true' || value === '1') {
+    return true;
+  }
+  if (value === 'false' || value === '0') {
+    return false;
+  }
+  return undefined;
+}
+
+function loadRuntimeOverrides(): Record<string, unknown> {
+  const overrides: Record<string, unknown> = {};
+  const path = process.env.RUNTIME_SECRETS_PATH;
+
+  if (!path) {
+    return overrides;
+  }
+
+  try {
+    const absolute = resolve(path);
+    const raw = readFileSync(absolute, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === 'object' && parsed !== null) {
+      return parsed as Record<string, unknown>;
+    }
+    throw new Error('Runtime secrets JSON must be an object');
+  } catch (error) {
+    logger.error('Failed to load runtime secrets overrides', {
+      path,
+      error: (error as Error).message,
+    });
+    throw error;
   }
 }
+
+function mergeConfig<T extends Record<string, any>>(...sources: Array<T | undefined>): T {
+  const target: Record<string, any> = {};
+
+  for (const source of sources) {
+    if (!source) continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (value === undefined) {
+        continue;
+      }
+
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        target[key] = mergeConfig(target[key] ?? {}, value);
+      } else {
+        target[key] = value;
+      }
+    }
+  }
+
+  return target as T;
+}
+
+const envOverrides: ConfigInput = {
+  environment: (process.env.NODE_ENV as AppConfig['environment']) ?? undefined,
+  server: {
+    port: process.env.PORT ? Number(process.env.PORT) : undefined,
+  },
+  azure: {
+    tenantId: process.env.AZURE_TENANT_ID ?? undefined,
+    clientId: process.env.AZURE_CLIENT_ID ?? undefined,
+    clientSecret: process.env.AZURE_CLIENT_SECRET ?? undefined,
+    scope: process.env.AZURE_SCOPE ?? undefined,
+  },
+  sharepoint: {
+    siteDisplayName: process.env.SITE_DISPLAY_NAME ?? undefined,
+    siteType: (process.env.SITE_TYPE as SiteType | undefined) ?? undefined,
+    host: process.env.SHAREPOINT_HOST ?? undefined,
+  },
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY ?? undefined,
+    model: process.env.OPENAI_MODEL ?? undefined,
+  },
+  redis: {
+    url: process.env.REDIS_URL ?? undefined,
+    tls: parseBoolean(process.env.REDIS_TLS),
+    keyPrefix: process.env.REDIS_KEY_PREFIX ?? undefined,
+  },
+  auth: {
+    tokenCacheTtlMinutes: process.env.AUTH_TOKEN_CACHE_TTL_MINUTES
+      ? Number(process.env.AUTH_TOKEN_CACHE_TTL_MINUTES)
+      : undefined,
+    tokenFallbackMs: process.env.AUTH_TOKEN_FALLBACK_MS
+      ? Number(process.env.AUTH_TOKEN_FALLBACK_MS)
+      : undefined,
+  },
+};
+
+const runtimeOverrides = (() => {
+  try {
+    return loadRuntimeOverrides();
+  } catch {
+    return undefined;
+  }
+})();
+
+const mergedConfig = mergeConfig<ConfigInput>(
+  DEFAULT_CONFIG as unknown as ConfigInput,
+  envOverrides,
+  runtimeOverrides as ConfigInput | undefined,
+);
+
+let parsedConfig: AppConfig;
+
+try {
+  parsedConfig = ConfigSchema.parse(mergedConfig);
+} catch (error) {
+  if (error instanceof z.ZodError) {
+    const details = error.issues
+      .map((issue) => `- ${issue.path.join('.') || '(root)'}: ${issue.message}`)
+      .join('\n');
+    throw new Error(`Configuration validation failed:\n${details}`);
+  }
+  throw error;
+}
+
+export const CONFIG: AppConfig = Object.freeze({
+  ...parsedConfig,
+  sharepoint: {
+    ...parsedConfig.sharepoint,
+    host: parsedConfig.sharepoint.host || undefined,
+  },
+  azure: {
+    ...parsedConfig.azure,
+    tokenEndpoint: `https://login.microsoftonline.com/${parsedConfig.azure.tenantId}/oauth2/v2.0/token`,
+  },
+});
+
+export type AppConfigType = typeof CONFIG;

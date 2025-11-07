@@ -97,7 +97,7 @@ router.post('/complete', async (req, res, next) => {
     ];
 
     const first = await openai.responses.create({
-      model: CONFIG.openaiModel,
+      model: CONFIG.openai.model,
       input: baseInput,
       tools: [ToolDefinition]
     });
@@ -112,10 +112,13 @@ router.post('/complete', async (req, res, next) => {
 
     const args = JSON.parse(toolCall.arguments ?? '{}');
     const parsed = MsGraphActionSchema.parse(args);
-    const result = await dispatchGraphAction(CONFIG.siteDisplayName ?? DEFAULT_DISPLAY_NAME, parsed);
+    const result = await dispatchGraphAction(
+      CONFIG.sharepoint.siteDisplayName ?? DEFAULT_DISPLAY_NAME,
+      parsed,
+    );
 
     const second = await openai.responses.create({
-      model: CONFIG.openaiModel,
+      model: CONFIG.openai.model,
       input: [
         ...baseInput,
         {

@@ -15,10 +15,12 @@ const ProvisionSchema = z.object({
 router.post('/', async (req, res, next) => {
   try {
     const body = ProvisionSchema.parse(req.body ?? {});
-    const result = await dispatchGraphAction(body.displayName ?? CONFIG.siteDisplayName, {
+    const displayName = body.displayName ?? CONFIG.sharepoint.siteDisplayName;
+    const siteType = body.siteType ?? CONFIG.sharepoint.siteType;
+    const result = await dispatchGraphAction(displayName, {
       action: 'ensure_site',
-      siteType: body.siteType ?? CONFIG.siteType,
-      siteName: body.displayName ?? CONFIG.siteDisplayName
+      siteType,
+      siteName: displayName,
     });
     res.json(result);
   } catch (error) {

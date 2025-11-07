@@ -18,7 +18,8 @@ const CatalogSchema = z.object({
 router.post('/ensure', async (req, res, next) => {
   try {
     const body = CatalogSchema.parse(req.body ?? {});
-    const result = await dispatchGraphAction(body.displayName ?? CONFIG.siteDisplayName, {
+    const displayName = body.displayName ?? CONFIG.sharepoint.siteDisplayName;
+    const result = await dispatchGraphAction(displayName, {
       action: 'create_catalog_page',
       catalogLinks: {
         repos: body.repos,

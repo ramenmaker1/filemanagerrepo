@@ -17,7 +17,8 @@ const ShareSchema = z.object({
 router.post('/', async (req, res, next) => {
   try {
     const body = ShareSchema.parse(req.body ?? {});
-    const result = await dispatchGraphAction(body.displayName ?? CONFIG.siteDisplayName, {
+    const displayName = body.displayName ?? CONFIG.sharepoint.siteDisplayName;
+    const result = await dispatchGraphAction(displayName, {
       action: 'share_deliverable',
       driveItemPath: body.path,
       shareType: body.type,

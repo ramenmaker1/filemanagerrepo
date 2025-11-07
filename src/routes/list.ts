@@ -21,7 +21,8 @@ router.get('/', async (req, res, next) => {
       displayName: req.query.displayName
     });
 
-    const result = await dispatchGraphAction(body.displayName ?? CONFIG.siteDisplayName, {
+    const displayName = body.displayName ?? CONFIG.sharepoint.siteDisplayName;
+    const result = await dispatchGraphAction(displayName, {
       action: 'list_folder',
       libraryName: body.libraryName,
       driveItemPath: body.path

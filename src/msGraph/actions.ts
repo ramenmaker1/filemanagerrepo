@@ -13,14 +13,17 @@ export async function dispatchGraphAction(
   payload: MsGraphAction
 ): Promise<Record<string, unknown>> {
   const resolveContext = async (override?: { siteName?: string; siteType?: SiteType }): Promise<SiteContext> => {
-    return ensureSite(override?.siteName ?? displayName, override?.siteType ?? CONFIG.siteType);
+    return ensureSite(
+      override?.siteName ?? displayName,
+      override?.siteType ?? CONFIG.sharepoint.siteType,
+    );
   };
 
   switch (payload.action) {
     case 'ensure_site': {
       const context = await resolveContext({
         siteName: payload.siteName ?? displayName,
-        siteType: payload.siteType
+        siteType: payload.siteType,
       });
       await ensureLibraries(context.siteId);
       await ensurePermissions(context.siteId);
@@ -82,4 +85,4 @@ export async function dispatchGraphAction(
   }
 }
 
-export const DEFAULT_DISPLAY_NAME = CONFIG.siteDisplayName;
+export const DEFAULT_DISPLAY_NAME = CONFIG.sharepoint.siteDisplayName;

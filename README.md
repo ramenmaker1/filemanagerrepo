@@ -14,13 +14,7 @@ This service provisions and manages the SharePoint/OneDrive workspace for **Elio
 
 ## Getting Started
 
-### 1. Install dependencies
-
-```bash
-npm install
-```
-
-### 2. Configure environment
+### 1. Configure environment
 
 Copy `.env.example` to `.env` and fill in the required secrets:
 
@@ -29,8 +23,17 @@ Copy `.env.example` to `.env` and fill in the required secrets:
 - `AZURE_CLIENT_SECRET`
 - `OPENAI_API_KEY`
 - Optional overrides: `SITE_DISPLAY_NAME`, `SITE_TYPE` (`team` or `communication`), `SHAREPOINT_HOST` (required for communication sites), `PORT`, `OPENAI_MODEL`
+- Redis-backed token caching: `REDIS_URL`, `REDIS_TLS`, `REDIS_KEY_PREFIX`
+- Token policy: `AUTH_TOKEN_CACHE_TTL_MINUTES` (<=55), `AUTH_TOKEN_FALLBACK_MS`
+- Runtime override file (JSON): `RUNTIME_SECRETS_PATH`
 
 > Grant the Azure AD app the app-only Graph permissions: `Sites.ReadWrite.All`, `Files.ReadWrite.All`, `Group.ReadWrite.All`, `User.Read.All` (plus `Team.Create` if you plan to team-enable the group).
+
+### 2. Install dependencies
+
+```bash
+npm install
+```
 
 ### 3. Run locally
 
@@ -40,7 +43,8 @@ npm run dev
 
 The server exposes:
 
-- `GET /health` — health check
+- `GET /healthz` — liveness health check (status, version, uptime)
+- `GET /readyz` — readiness probe with Graph, SharePoint, and Redis checks
 - `POST /provision` — ensure site, libraries, and permissions
 - `POST /share` — generate expiring links from Deliverables
 - `POST /catalog/ensure` — publish/update the Catalog page
@@ -82,4 +86,5 @@ The agent enforces Deliverables-only sharing and will respond with human guidanc
 - Communication site creation leverages SharePoint's `_api/SPSiteManager/Create`; configure `SHAREPOINT_HOST` with your tenant hostname (for example `https://contoso.sharepoint.com`).
 - Share link expiration is subject to tenant policies; the service requests the provided `expiresAt`, but SharePoint may override it.
 - Catalog page composition uses a simplified text web part — extend `catalog.ts` for richer layouts.
+- OAuth client credentials flow is implemented manually with Redis-backed caching (55 minute TTL) and an automatic fallback circuit breaker after repeated failures. Redis is optional but strongly recommended for multi-instance deployments.
 - Never upload Git repositories or `.env` files to SharePoint/OneDrive; keep code in GitHub and sync references via the Catalog page.

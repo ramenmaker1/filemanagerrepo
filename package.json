@@ -10,8 +10,8 @@
     "lint": "eslint --ext .ts src"
   },
   "dependencies": {
-    "@azure/msal-node": "^1.17.5",
     "dotenv": "^16.4.5",
+    "ioredis": "^5.4.1",
     "express": "^4.19.2",
     "node-fetch": "^3.3.2",
     "openai": "^4.54.1",
