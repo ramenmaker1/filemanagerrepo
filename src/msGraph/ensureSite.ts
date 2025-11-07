@@ -88,19 +88,32 @@ async function getSiteByPath(hostname: string, relativePath: string): Promise<Si
   }
 }
 
-export async function ensureCommunicationSite(displayName: string): Promise<SiteContext> {
-  if (!CONFIG.sharepoint.host) {
-    throw new Error('SHAREPOINT_HOST must be configured for communication sites');
+function resolveCommunicationPath(displayName: string, sitePath?: string): string {
+  if (sitePath) {
+    const trimmed = sitePath.startsWith('/') ? sitePath : `/${sitePath}`;
+    if (!trimmed.startsWith('/sites/')) {
+      throw new Error('Communication site paths must start with /sites/');
+    }
+    return trimmed;
   }
 
+  const slug = slugify(displayName || 'site');
+  return `/sites/${slug}`;
+}
+
+export async function ensureCommunicationSite(
+  displayName: string,
+  host: string,
+  sitePath?: string,
+): Promise<SiteContext> {
   let url: URL;
   try {
-    url = new URL(CONFIG.sharepoint.host);
+    url = new URL(host);
   } catch (error) {
-    throw new Error('SHAREPOINT_HOST must be a valid absolute URL');
+    throw new Error('SharePoint host must be a valid absolute URL');
   }
-  const slug = slugify(displayName || 'site');
-  const relativePath = `/sites/${slug}`;
+
+  const relativePath = resolveCommunicationPath(displayName, sitePath);
 
   const existing = await getSiteByPath(url.hostname, relativePath);
   if (existing?.id) {
@@ -109,28 +122,45 @@ export async function ensureCommunicationSite(displayName: string): Promise<Site
   }
 
   logger.info('Creating communication site via SPSiteManager', { displayName, relativePath });
-  await sharepointFetch('/_api/SPSiteManager/Create', {
-    method: 'POST',
-    body: JSON.stringify({
-      request: {
-        Title: displayName,
-        Url: `${url.origin}${relativePath}`,
-        Lcid: 1033,
-        ShareByEmailEnabled: true,
-        Description: 'Elion Studio communication site',
-        WebTemplate: 'SITEPAGEPUBLISHING#0',
-        SiteDesignId: '00000000-0000-0000-0000-000000000000'
-      }
-    })
-  });
+  await sharepointFetch(
+    '/_api/SPSiteManager/Create',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        request: {
+          Title: displayName,
+          Url: `${url.origin}${relativePath}`,
+          Lcid: 1033,
+          ShareByEmailEnabled: true,
+          Description: 'Elion Studio communication site',
+          WebTemplate: 'SITEPAGEPUBLISHING#0',
+          SiteDesignId: '00000000-0000-0000-0000-000000000000'
+        }
+      })
+    },
+    { host },
+  );
 
   const site = await pollForSite(`/sites/${url.hostname}:${relativePath}`);
   return { siteId: site.id, siteUrl: site.webUrl, siteType: 'communication' };
 }
 
-export async function ensureSite(displayName: string, siteType: SiteType = 'team'): Promise<SiteContext> {
-  return siteType === 'communication'
-    ? ensureCommunicationSite(displayName)
-    : ensureTeamSite(displayName);
+export interface EnsureSiteOptions {
+  displayName: string;
+  siteType: SiteType;
+  host?: string;
+  sitePath?: string;
+}
+
+export async function ensureSite(options: EnsureSiteOptions): Promise<SiteContext> {
+  if (options.siteType === 'communication') {
+    const host = options.host ?? CONFIG.sharepoint.host;
+    if (!host) {
+      throw new Error('SharePoint host must be configured for communication sites');
+    }
+    return ensureCommunicationSite(options.displayName, host, options.sitePath);
+  }
+
+  return ensureTeamSite(options.displayName);
 }
 

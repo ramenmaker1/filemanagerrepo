@@ -5,8 +5,64 @@ import { resolve } from 'node:path';
 import { z } from 'zod';
 
 import { logger } from './logger.js';
+import { readSecretFromEnv } from './utils/secrets.js';
 
 export type SiteType = 'team' | 'communication';
+
+const ALLOWED_ROLES = ['admin', 'api-access', 'read-only', 'share-manager'] as const;
+
+const ApiKeySecretSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    value: z.string().min(1).optional(),
+    env: z.string().min(1).optional(),
+    file: z.string().min(1).optional(),
+    active: z.boolean().default(true),
+    notBefore: z.string().datetime().optional(),
+    expiresAt: z.string().datetime().optional(),
+  })
+  .refine((secret) => secret.value || secret.env || secret.file, {
+    message: 'Secret definition must provide value, env, or file',
+  });
+
+export type ApiKeySecretConfig = z.infer<typeof ApiKeySecretSchema>;
+
+const ApiKeySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  tenantId: z.string().min(1),
+  roles: z
+    .array(z.enum(ALLOWED_ROLES))
+    .min(1, 'API key must include at least one role')
+    .default(['api-access']),
+  active: z.boolean().default(true),
+  createdAt: z.string().datetime().optional(),
+  lastRotatedAt: z.string().datetime().optional(),
+  expiresAt: z.string().datetime().optional(),
+  secrets: z.array(ApiKeySecretSchema).min(1, 'API key must define at least one secret version'),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export type ApiKeyConfig = z.infer<typeof ApiKeySchema>;
+
+const TenantSharePointSchema = z
+  .object({
+    siteDisplayName: z.string().min(1).optional(),
+    siteType: z.enum(['team', 'communication']).optional(),
+    host: z.string().min(1).optional(),
+    sitePath: z.string().min(1).optional(),
+  })
+  .default({});
+
+const TenantSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  active: z.boolean().default(true),
+  sharepoint: TenantSharePointSchema,
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export type TenantConfig = z.infer<typeof TenantSchema>;
 
 const DEFAULT_CONFIG = {
   environment: 'development',
@@ -37,6 +93,8 @@ const DEFAULT_CONFIG = {
     tokenCacheTtlMinutes: 55,
     tokenFallbackMs: 5 * 60 * 1000,
   },
+  tenants: [] as TenantConfig[],
+  apiKeys: [] as ApiKeyConfig[],
 } as const;
 
 const ConfigSchema = z
@@ -110,6 +168,8 @@ const ConfigSchema = z
           .default(DEFAULT_CONFIG.auth.tokenFallbackMs),
       })
       .default(DEFAULT_CONFIG.auth),
+    tenants: z.array(TenantSchema).default(DEFAULT_CONFIG.tenants),
+    apiKeys: z.array(ApiKeySchema).default(DEFAULT_CONFIG.apiKeys),
   })
   .superRefine((config, ctx) => {
     if (config.sharepoint.siteType === 'communication' && !config.sharepoint.host) {
@@ -119,10 +179,97 @@ const ConfigSchema = z
         path: ['sharepoint', 'host'],
       });
     }
+
+    const tenantIds = new Set<string>();
+
+    config.tenants.forEach((tenant, index) => {
+      if (tenantIds.has(tenant.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate tenant id '${tenant.id}'`,
+          path: ['tenants', index, 'id'],
+        });
+      }
+      tenantIds.add(tenant.id);
+
+      const siteType = tenant.sharepoint.siteType ?? config.sharepoint.siteType;
+      if (siteType === 'communication') {
+        const host = tenant.sharepoint.host ?? config.sharepoint.host;
+        if (!host) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Communication site tenants must configure sharepoint.host',
+            path: ['tenants', index, 'sharepoint', 'host'],
+          });
+        }
+      }
+    });
+
+    const apiKeyIds = new Set<string>();
+
+    config.apiKeys.forEach((apiKey, index) => {
+      if (apiKeyIds.has(apiKey.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate API key id '${apiKey.id}'`,
+          path: ['apiKeys', index, 'id'],
+        });
+      }
+      apiKeyIds.add(apiKey.id);
+
+      if (!tenantIds.has(apiKey.tenantId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `API key references unknown tenant '${apiKey.tenantId}'`,
+          path: ['apiKeys', index, 'tenantId'],
+        });
+      }
+
+      if (!apiKey.secrets.some((secret) => secret.active !== false)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'API key must have at least one active secret version',
+          path: ['apiKeys', index, 'secrets'],
+        });
+      }
+    });
   });
 
 type ConfigInput = z.input<typeof ConfigSchema>;
 type AppConfig = z.output<typeof ConfigSchema>;
+
+function parseJsonValue(raw: string, label: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${label} must contain valid JSON: ${(error as Error).message}`);
+  }
+}
+
+function loadJsonValue(envVar: string, pathVar: string, label: string): unknown {
+  const inline = process.env[envVar];
+  if (inline && inline.trim().length > 0) {
+    return parseJsonValue(inline, label);
+  }
+
+  const filePath = process.env[pathVar];
+  if (filePath && filePath.trim().length > 0) {
+    try {
+      const absolute = resolve(filePath);
+      const raw = readFileSync(absolute, 'utf8');
+      return parseJsonValue(raw, `${label} file`);
+    } catch (error) {
+      logger.error('Failed to read JSON configuration file', {
+        label,
+        path: filePath,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  return undefined;
+}
 
 function parseBoolean(value: string | undefined): boolean | undefined {
   if (value === undefined) {
@@ -191,7 +338,7 @@ const envOverrides: ConfigInput = {
   azure: {
     tenantId: process.env.AZURE_TENANT_ID ?? undefined,
     clientId: process.env.AZURE_CLIENT_ID ?? undefined,
-    clientSecret: process.env.AZURE_CLIENT_SECRET ?? undefined,
+    clientSecret: readSecretFromEnv('AZURE_CLIENT_SECRET') ?? undefined,
     scope: process.env.AZURE_SCOPE ?? undefined,
   },
   sharepoint: {
@@ -200,7 +347,7 @@ const envOverrides: ConfigInput = {
     host: process.env.SHAREPOINT_HOST ?? undefined,
   },
   openai: {
-    apiKey: process.env.OPENAI_API_KEY ?? undefined,
+    apiKey: readSecretFromEnv('OPENAI_API_KEY') ?? undefined,
     model: process.env.OPENAI_MODEL ?? undefined,
   },
   redis: {
@@ -216,6 +363,8 @@ const envOverrides: ConfigInput = {
       ? Number(process.env.AUTH_TOKEN_FALLBACK_MS)
       : undefined,
   },
+  tenants: loadJsonValue('TENANTS_JSON', 'TENANTS_CONFIG_PATH', 'TENANTS_JSON') as TenantConfig[] | undefined,
+  apiKeys: loadJsonValue('API_KEYS_JSON', 'API_KEYS_CONFIG_PATH', 'API_KEYS_JSON') as ApiKeyConfig[] | undefined,
 };
 
 const runtimeOverrides = (() => {
@@ -250,7 +399,15 @@ export const CONFIG: AppConfig = Object.freeze({
   ...parsedConfig,
   sharepoint: {
     ...parsedConfig.sharepoint,
-    host: parsedConfig.sharepoint.host || undefined,
+    host:
+      parsedConfig.sharepoint.host ||
+      parsedConfig.tenants.find((tenant) => tenant.active && tenant.sharepoint.host)?.sharepoint.host ||
+      undefined,
+    siteDisplayName:
+      parsedConfig.sharepoint.siteDisplayName ||
+      parsedConfig.tenants.find((tenant) => tenant.active && tenant.sharepoint.siteDisplayName)?.sharepoint
+        .siteDisplayName ||
+      DEFAULT_CONFIG.sharepoint.siteDisplayName,
   },
   azure: {
     ...parsedConfig.azure,

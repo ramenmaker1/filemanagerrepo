@@ -20,18 +20,21 @@ export const MsGraphActionSchema = z.discriminatedUnion('action', [
         base44: z.array(z.string()).optional(),
         dataBuckets: z.array(z.string()).optional()
       })
-      .default({})
+      .default({}),
+    siteName: z.string().min(1).optional()
   }),
   z.object({
     action: z.literal('share_deliverable'),
     driveItemPath: z.string().min(1),
     shareType: z.enum(['view', 'edit']).optional(),
-    expiresAt: z.string().optional()
+    expiresAt: z.string().optional(),
+    siteName: z.string().min(1).optional()
   }),
   z.object({
     action: z.literal('list_folder'),
     libraryName: z.string().min(1),
-    driveItemPath: z.string().default('/')
+    driveItemPath: z.string().default('/'),
+    siteName: z.string().min(1).optional()
   }),
   z.object({
     action: z.literal('link_repo_and_base44'),

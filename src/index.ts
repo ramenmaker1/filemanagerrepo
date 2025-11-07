@@ -6,6 +6,8 @@ import { CONFIG } from './config.js';
 import { logger } from './logger.js';
 import { graphFetch, sharepointFetch } from './msGraph/auth.js';
 import { getRedisClient } from './redis.js';
+import { authenticationMiddleware } from './middleware/auth.js';
+import { getDefaultTenant } from './tenants.js';
 import catalog from './routes/catalog.js';
 import list from './routes/list.js';
 import provision from './routes/provision.js';
@@ -78,13 +80,16 @@ function skippedCheck(name: string, message: string): CheckResult {
 app.get('/readyz', async (_req, res) => {
   const overallStart = Date.now();
 
+  const defaultTenant = getDefaultTenant();
+  const sharepointHost = defaultTenant?.sharepoint.host ?? CONFIG.sharepoint.host;
+
   const checks = await Promise.all([
     runCheck('graph', async () => {
       await graphFetch('/sites/root?$select=id');
     }),
-    CONFIG.sharepoint.host
+    sharepointHost
       ? runCheck('sharepoint', async () => {
-          await sharepointFetch('/_api/web?$select=Id');
+          await sharepointFetch('/_api/web?$select=Id', {}, { host: sharepointHost });
         })
       : Promise.resolve(skippedCheck('sharepoint', 'SHAREPOINT_HOST not configured')),
     CONFIG.redis.url
@@ -107,6 +112,8 @@ app.get('/readyz', async (_req, res) => {
     overall_latency_ms: Date.now() - overallStart,
   });
 });
+
+app.use(authenticationMiddleware);
 
 app.use('/provision', provision);
 app.use('/share', share);

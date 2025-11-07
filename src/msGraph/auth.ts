@@ -205,12 +205,17 @@ export async function graphFetch(path: string, init: RequestInit = {}): Promise<
   });
 }
 
-export async function sharepointFetch(path: string, init: RequestInit = {}): Promise<any> {
-  if (!CONFIG.sharepoint.host) {
-    throw new Error('SHAREPOINT_HOST must be configured to call SharePoint REST APIs');
+export async function sharepointFetch(
+  path: string,
+  init: RequestInit = {},
+  options: { host?: string } = {},
+): Promise<any> {
+  const host = options.host ?? CONFIG.sharepoint.host;
+  if (!host) {
+    throw new Error('SharePoint host must be configured to call SharePoint REST APIs');
   }
 
-  return fetchWithToken(CONFIG.sharepoint.host, path, init, {
+  return fetchWithToken(host, path, init, {
     'Content-Type': 'application/json;odata=verbose',
     Accept: 'application/json;odata=verbose',
   });

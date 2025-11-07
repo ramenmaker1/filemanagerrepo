@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { CONFIG } from '../config.js';
 import { dispatchGraphAction } from '../msGraph/actions.js';
 import { logger } from '../logger.js';
 
@@ -11,18 +10,23 @@ const ShareSchema = z.object({
   path: z.string().min(1),
   type: z.enum(['view', 'edit']).default('view'),
   expiresAt: z.string().datetime().optional(),
-  displayName: z.string().min(1).optional()
+  displayName: z.string().min(1).optional(),
 });
 
 router.post('/', async (req, res, next) => {
   try {
     const body = ShareSchema.parse(req.body ?? {});
-    const displayName = body.displayName ?? CONFIG.sharepoint.siteDisplayName;
-    const result = await dispatchGraphAction(displayName, {
+    const tenant = req.tenant;
+    if (!tenant) {
+      throw new Error('Tenant context missing for share request');
+    }
+
+    const result = await dispatchGraphAction(tenant, {
       action: 'share_deliverable',
       driveItemPath: body.path,
       shareType: body.type,
-      expiresAt: body.expiresAt
+      expiresAt: body.expiresAt,
+      siteName: body.displayName,
     });
     res.json(result);
   } catch (error) {

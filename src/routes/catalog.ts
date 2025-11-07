@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { CONFIG } from '../config.js';
 import { dispatchGraphAction } from '../msGraph/actions.js';
 import { logger } from '../logger.js';
 
@@ -12,20 +11,25 @@ const CatalogSchema = z.object({
   repos: z.array(z.string().url()).default([]),
   base44: z.array(z.string().url()).default([]),
   dataBuckets: z.array(z.string().url()).default([]),
-  displayName: z.string().min(1).optional()
+  displayName: z.string().min(1).optional(),
 });
 
 router.post('/ensure', async (req, res, next) => {
   try {
     const body = CatalogSchema.parse(req.body ?? {});
-    const displayName = body.displayName ?? CONFIG.sharepoint.siteDisplayName;
-    const result = await dispatchGraphAction(displayName, {
+    const tenant = req.tenant;
+    if (!tenant) {
+      throw new Error('Tenant context missing for catalog ensure');
+    }
+
+    const result = await dispatchGraphAction(tenant, {
       action: 'create_catalog_page',
       catalogLinks: {
         repos: body.repos,
         base44: body.base44,
-        dataBuckets: body.dataBuckets
-      }
+        dataBuckets: body.dataBuckets,
+      },
+      siteName: body.displayName,
     });
     res.json(result);
   } catch (error) {

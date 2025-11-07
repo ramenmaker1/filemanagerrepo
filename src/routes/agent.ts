@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { CONFIG } from '../config.js';
-import { dispatchGraphAction, DEFAULT_DISPLAY_NAME } from '../msGraph/actions.js';
+import { dispatchGraphAction } from '../msGraph/actions.js';
 import { MsGraphActionSchema } from '../msGraph/schema.js';
 import { openai } from '../openai.js';
 import { logger } from '../logger.js';
@@ -112,10 +112,12 @@ router.post('/complete', async (req, res, next) => {
 
     const args = JSON.parse(toolCall.arguments ?? '{}');
     const parsed = MsGraphActionSchema.parse(args);
-    const result = await dispatchGraphAction(
-      CONFIG.sharepoint.siteDisplayName ?? DEFAULT_DISPLAY_NAME,
-      parsed,
-    );
+    const tenant = req.tenant;
+    if (!tenant) {
+      throw new Error('Tenant context missing for agent request');
+    }
+
+    const result = await dispatchGraphAction(tenant, parsed);
 
     const second = await openai.responses.create({
       model: CONFIG.openai.model,
